@@ -30,6 +30,7 @@ export const ownershipLevelSchema = z.enum(OWNERSHIP_LEVELS_WITH_INHERIT);
 
 export const ownershipSchema = z.object({
   default: ownershipLevelSchema.optional(),
+  players: ownershipLevelSchema.optional(),
   users: z.record(ownershipLevelSchema).optional(),
 });
 
@@ -43,6 +44,11 @@ export const OWNERSHIP_JSON_SCHEMA = {
       type: 'string',
       enum: [...OWNERSHIP_LEVELS_WITH_INHERIT],
       description: 'Level granted to every user without an explicit entry.',
+    },
+    players: {
+      type: 'string',
+      enum: [...OWNERSHIP_LEVELS_WITH_INHERIT],
+      description: 'Level granted to every non-GM user at once.',
     },
     users: {
       type: 'object',

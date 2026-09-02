@@ -285,7 +285,8 @@ export class CombatChatHandlers {
       case 'all':
         return tokens;
       case 'hostile':
-        return tokens.filter(t => t.disposition === constValue('TOKEN_DISPOSITIONS.HOSTILE', -1));
+        // hostile and secret (-2) tokens are both enemies for initiative purposes
+        return tokens.filter(t => typeof t.disposition === 'number' && t.disposition < 0);
       case 'friendly':
         return tokens.filter(t => t.disposition === constValue('TOKEN_DISPOSITIONS.FRIENDLY', 1));
       case 'npc':

@@ -60,7 +60,8 @@ function remote(ref) {
   if (!ref) return ref;
   if (uploaded.has(ref)) return uploaded.get(ref);
   if (ref.includes('/')) return ref;
-  const guess = `${remoteDir}/${ref}`;
+  // Foundry stores uploaded paths percent-encoded per segment; mirror that for files uploaded earlier
+  const guess = `${remoteDir}/${ref}`.split('/').map(seg => encodeURIComponent(seg)).join('/');
   log(`  (no upload recorded for "${ref}", using ${guess})`);
   return guess;
 }

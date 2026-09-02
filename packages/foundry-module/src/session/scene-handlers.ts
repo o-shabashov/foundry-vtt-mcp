@@ -203,6 +203,8 @@ export class SceneHandlers {
     const scene = await documentClass('Scene').create(sceneData);
     if (!scene) throw new Error(`Foundry returned no document when creating scene "${name}"`);
 
+    await SceneHandlers.applyBackground(scene, background);
+
     if (data?.activate === true) await scene.activate();
 
     audit(this.dataAccess, 'scene.create', { name: scene.name, id: scene.id }, 'success');
@@ -223,7 +225,7 @@ export class SceneHandlers {
     const update: Record<string, any> = {};
 
     if (typeof data?.name === 'string') update.name = data.name;
-    if (typeof data?.background === 'string') update.background = { src: data.background };
+    if (typeof data?.background === 'string') await SceneHandlers.applyBackground(scene, data.background);
     if (typeof data?.width === 'number') update.width = data.width;
     if (typeof data?.height === 'number') update.height = data.height;
     if (typeof data?.padding === 'number') update.padding = data.padding;
@@ -325,7 +327,7 @@ export class SceneHandlers {
       active: scene.active === true,
       navigation: scene.navigation === true,
       navName: scene.navName ?? null,
-      background: scene.background?.src ?? null,
+      background: SceneHandlers.readBackground(scene),
       width: scene.width,
       height: scene.height,
       padding: scene.padding,
@@ -352,6 +354,25 @@ export class SceneHandlers {
         sounds: scene.sounds?.size ?? 0,
       },
     };
+  }
+
+  /**
+   * Foundry 14 keeps the background image on the scene's default Level document
+   * (`scene.levels`), and ignores a top-level `background.src` on create. Older cores
+   * still use the top-level field, so both paths are handled.
+   */
+  private static async applyBackground(scene: any, src: string): Promise<void> {
+    const level = scene.levels?.contents?.[0] ?? null;
+    if (level) {
+      await scene.updateEmbeddedDocuments('Level', [{ _id: level.id, 'background.src': src }]);
+      return;
+    }
+    await scene.update({ 'background.src': src });
+  }
+
+  private static readBackground(scene: any): string | null {
+    const level = scene.levels?.contents?.[0] ?? null;
+    return level?.background?.src ?? scene.background?.src ?? null;
   }
 
   /** `backgroundColor` sits at the top level on some cores and under `environment` on others. */

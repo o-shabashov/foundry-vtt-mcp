@@ -865,7 +865,7 @@ export class SessionSceneTools {
 
     if (action === 'create') requireField('manage-walls', action, 'walls', walls);
     if (action === 'delete') requireField('manage-walls', action, 'ids', ids);
-    if (action === 'box') requireField('manage-walls', action, 'box', box);
+    // 'box' without an explicit rectangle walls the whole scene (the module handles the default)
     if (action === 'import-uvtt') {
       if (!uvtt) {
         throw new Error('manage-walls action "import-uvtt" requires "uvtt" or "uvttFile"');
