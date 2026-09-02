@@ -2,7 +2,7 @@
 // Build a whole session in Foundry from a YAML manifest: upload assets, create scenes with lights,
 // walls, tiles, notes and tokens, playlists, journals with ownership, optionally a combat.
 //
-//   node scripts/session-apply.mjs path/to/session.yaml [--dry-run] [--only=uploads,scenes,playlists,journals,combat]
+//   node scripts/session-apply.mjs path/to/session.yaml [--dry-run] [--only=uploads,scenes,playlists,journals,combat,thumbs]
 //
 // Manifest (paths under `assetsDir` are local; they are uploaded to `remoteDir` and referenced by that path):
 //
@@ -15,6 +15,7 @@
 //     - name: Тихая Заводь
 //       background: Карта.jpeg                       # file in assetsDir (or an existing Data path)
 //       gridSize: 100 (or gridColumns: 40 to derive it from the image width), darkness: 0.2, globalLight: false, replace: true, activate: false
+//       thumb: Карта.jpeg                              # optional local image for the 300x100 thumbnail (default: background); --only=thumbs refreshes existing scenes
 //       lights:  [ { x: 10, y: 5, preset: torch } ]
 //       walls:   { box: true, uvtt: map.dd2vtt, segments: [ { from: {x: 0, y: 0}, to: {x: 10, y: 0}, door: door } ] }
 //       tiles:   [ { image: Overlay.png, x: 0, y: 0, overhead: true } ]
@@ -36,6 +37,7 @@
 import fs from 'node:fs';
 import { execFileSync } from 'node:child_process';
 import path from 'node:path';
+import os from 'node:os';
 import yaml from 'js-yaml';
 import { createClient } from './lib/mcp-client.mjs';
 
@@ -65,6 +67,32 @@ function localImageWidth(file) {
   } catch {
     return null;
   }
+}
+
+/** Scene thumbnail (300x100, cover crop) built locally with macOS `sips`; the headless GM client has no canvas and refuses Scene#createThumbnail. */
+function makeThumb(localImage) {
+  const dims = execFileSync('sips', ['-g', 'pixelWidth', '-g', 'pixelHeight', localImage], { encoding: 'utf8' });
+  const w = Number(dims.match(/pixelWidth:\s*(\d+)/)?.[1] ?? 0);
+  const h = Number(dims.match(/pixelHeight:\s*(\d+)/)?.[1] ?? 0);
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'scene-thumb-'));
+  const out = path.join(dir, path.basename(localImage).replace(/\.[^.]+$/, '') + '.jpg');
+  const resample = w && h && w / h >= 3 ? ['--resampleHeight', '100'] : ['--resampleWidth', '300'];
+  execFileSync('sips', ['-s', 'format', 'jpeg', '-s', 'formatOptions', '80', ...resample, localImage, '--out', out], { stdio: 'ignore' });
+  execFileSync('sips', ['-c', '100', '300', out], { stdio: 'ignore' });
+  return out;
+}
+/** Upload a thumbnail and store it on the scene (`thumb` is not part of manage-scene's schema, so run-script sets it). */
+async function applyThumb(sceneRef, sceneName, localImage) {
+  if (!fs.existsSync(localImage)) { log(`  (thumb: no local image "${localImage}", skipped)`); return; }
+  if (dryRun) { log(`  [dry-run] thumb from ${path.basename(localImage)}`); return; }
+  const file = makeThumb(localImage);
+  const res = await call('upload-file', { filePath: file, targetDir: `${remoteDir}/thumbs`, overwrite: true });
+  const thumb = res?.path ?? `${remoteDir}/thumbs/${path.basename(file)}`;
+  await call('run-script', {
+    script: 'const s = game.scenes.get(args.id) ?? game.scenes.getName(args.name); if (!s) throw new Error("scene not found: " + args.name); await s.update({ thumb: args.thumb }); return s.thumb;',
+    args: { id: sceneRef, name: sceneName, thumb },
+  });
+  log(`  thumb -> ${thumb}`);
 }
 const log = (...a) => console.log(...a);
 const uploaded = new Map(); // local file name -> remote path
@@ -185,7 +213,17 @@ try {
         for (const t of s.tokens) tokens.push({ ...t, actor: await resolveActorRef(t.actor) });
         await call('place-tokens', { scene, tokens, importCompendiumTo: manifest.importFolder });
       }
+      const thumbSrc = path.join(assetsDir, s.thumb ?? s.background);
+      await applyThumb(scene, s.name, thumbSrc);
       if (s.activate) await call('manage-scene', { action: 'activate', scene });
+    }
+  }
+
+  // ---------- thumbs (standalone: --only=thumbs refreshes thumbnails of existing scenes) ----------
+  if (only.includes('thumbs')) {
+    for (const s of manifest.scenes ?? []) {
+      log(`thumb: ${s.name}`);
+      await applyThumb(s.name, s.name, path.join(assetsDir, s.thumb ?? s.background));
     }
   }
 
