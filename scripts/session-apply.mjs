@@ -9,6 +9,7 @@
 //   session: Сессия 15
 //   assetsDir: /abs/local/dir
 //   remoteDir: worlds/my-world/sessions/Сессия 15
+//   bestiary: world.pepel-bestiary                # compendium used by pack:Имя token references
 //   uploads: [ { file: Карта.jpeg } ]            # optional; default: every image/audio/pdf file in assetsDir
 //   scenes:
 //     - name: Тихая Заводь
@@ -17,7 +18,8 @@
 //       lights:  [ { x: 10, y: 5, preset: torch } ]
 //       walls:   { box: true, uvtt: map.dd2vtt, segments: [ { from: {x: 0, y: 0}, to: {x: 10, y: 0}, door: door } ] }
 //       tiles:   [ { image: Overlay.png, x: 0, y: 0, overhead: true } ]
-//       tokens:  [ { actor: Compendium.world.my-bestiary.Actor.xxx, x: 20, y: 12 }, { actor: Бес, x: 5, y: 5, count: 6 } ]
+//       tokens:  [ { actor: pack:Мясник, x: 20, y: 12 }, { actor: Compendium.world.x.Actor.id, x: 1, y: 1 }, { actor: Бес, x: 5, y: 5, count: 6 } ]
+//                ('pack:Имя' looks the name up in `bestiary` (default world.pepel-bestiary); a bare name is a world actor)
 //       notes:   [ { journal: Заметки, x: 3, y: 3, label: Колодец } ]
 //       playlist: С15 Заводь
 //   playlists:
@@ -67,6 +69,22 @@ function remote(ref) {
 }
 
 const client = dryRun ? null : await createClient({ timeoutMs: 300000 });
+const bestiaryPack = manifest.bestiary ?? 'world.pepel-bestiary';
+let bestiaryIndex = null;
+
+/** Token actor references: "pack:Имя" resolves to the compendium entry with that name. */
+async function resolveActorRef(ref) {
+  if (typeof ref !== 'string' || !ref.startsWith('pack:')) return ref;
+  const name = ref.slice(5).trim();
+  if (dryRun) return `Compendium.${bestiaryPack}.Actor.<${name}>`;
+  if (!bestiaryIndex) {
+    const entries = await client.call('manage-compendium', { action: 'contents', pack: bestiaryPack });
+    bestiaryIndex = new Map(entries.map(e => [e.name, e.uuid]));
+  }
+  const uuid = bestiaryIndex.get(name);
+  if (!uuid) throw new Error(`no actor "${name}" in ${bestiaryPack} (names: ${[...bestiaryIndex.keys()].join(', ')})`);
+  return uuid;
+}
 async function call(name, toolArgs) {
   if (dryRun) {
     log(`  [dry-run] ${name} ${JSON.stringify(toolArgs).slice(0, 300)}`);
@@ -143,7 +161,11 @@ try {
       if (s.lights?.length) await call('manage-scene-lights', { scene, action: 'create', lights: s.lights });
       if (s.tiles?.length) await call('manage-tiles', { scene, action: 'create', tiles: s.tiles.map(t => ({ ...t, image: remote(t.image) })) });
       if (s.notes?.length) await call('manage-scene-notes', { scene, action: 'create', notes: s.notes });
-      if (s.tokens?.length) await call('place-tokens', { scene, tokens: s.tokens, importCompendiumTo: manifest.importFolder });
+      if (s.tokens?.length) {
+        const tokens = [];
+        for (const t of s.tokens) tokens.push({ ...t, actor: await resolveActorRef(t.actor) });
+        await call('place-tokens', { scene, tokens, importCompendiumTo: manifest.importFolder });
+      }
       if (s.activate) await call('manage-scene', { action: 'activate', scene });
     }
   }
