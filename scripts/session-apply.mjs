@@ -14,7 +14,7 @@
 //   scenes:
 //     - name: Тихая Заводь
 //       background: Карта.jpeg                       # file in assetsDir (or an existing Data path)
-//       gridSize: 100, darkness: 0.2, globalLight: false, replace: true, activate: false
+//       gridSize: 100 (or gridColumns: 40 to derive it from the image width), darkness: 0.2, globalLight: false, replace: true, activate: false
 //       lights:  [ { x: 10, y: 5, preset: torch } ]
 //       walls:   { box: true, uvtt: map.dd2vtt, segments: [ { from: {x: 0, y: 0}, to: {x: 10, y: 0}, door: door } ] }
 //       tiles:   [ { image: Overlay.png, x: 0, y: 0, overhead: true } ]
@@ -34,6 +34,7 @@
 // Requires the MCP bridge to be reachable (same as scripts/mcp-call.mjs).
 
 import fs from 'node:fs';
+import { execFileSync } from 'node:child_process';
 import path from 'node:path';
 import yaml from 'js-yaml';
 import { createClient } from './lib/mcp-client.mjs';
@@ -54,6 +55,17 @@ const remoteDir = manifest.remoteDir;
 if (!remoteDir) throw new Error('manifest.remoteDir is required');
 
 const ASSET_EXT = /\.(jpe?g|png|webp|gif|svg|mp3|ogg|wav|webm|mp4|pdf)$/i;
+
+/** Pixel width of a local image, via macOS `sips`; null when unavailable. */
+function localImageWidth(file) {
+  try {
+    const out = execFileSync('sips', ['-g', 'pixelWidth', file], { encoding: 'utf8' });
+    const m = out.match(/pixelWidth:\s*(\d+)/);
+    return m ? Number(m[1]) : null;
+  } catch {
+    return null;
+  }
+}
 const log = (...a) => console.log(...a);
 const uploaded = new Map(); // local file name -> remote path
 
@@ -144,9 +156,16 @@ try {
       if (s.replace !== false) {
         try { await call('manage-scene', { action: 'delete', scene: s.name }); } catch { /* absent is fine */ }
       }
+      // gridColumns: derive the pixel grid size from the local image so a "200x150 ft" map gets 40 columns
+      let gridSize = s.gridSize;
+      if (s.gridColumns && !gridSize) {
+        const width = localImageWidth(path.join(assetsDir, s.background));
+        if (width) gridSize = Math.round(width / s.gridColumns);
+        else log(`  (gridColumns: could not measure "${s.background}", falling back to gridSize 100)`);
+      }
       const created = await call('manage-scene', {
         action: 'create', name: s.name, background: remote(s.background), folder: s.folder,
-        gridSize: s.gridSize, gridType: s.gridType, gridDistance: s.gridDistance, gridUnits: s.gridUnits,
+        gridSize, gridType: s.gridType, gridDistance: s.gridDistance, gridUnits: s.gridUnits,
         width: s.width, height: s.height, padding: s.padding, backgroundColor: s.backgroundColor,
         darkness: s.darkness, globalLight: s.globalLight, tokenVision: s.tokenVision, fogExploration: s.fogExploration,
         navigation: s.navigation, navName: s.navName, playlist: s.playlist, initialView: s.initialView, activate: false,
