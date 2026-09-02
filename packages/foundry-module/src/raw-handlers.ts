@@ -1,5 +1,6 @@
 import { MODULE_ID } from './constants.js';
 import type { FoundryDataAccess } from './data-access.js';
+import { resolveActor, resolvePack } from './session/common.js';
 
 /**
  * Raw document handlers.
@@ -111,90 +112,15 @@ export class RawHandlers {
    * Resolve an actor identifier: UUID, then world id, then exact world name,
    * then a case-insensitive partial name match. An ambiguous partial match is an
    * error listing the candidates. With `packId` the lookup is confined to that pack.
+   * The implementation is shared with the session handlers.
    */
   private async resolveActor(identifier: string, packId?: string): Promise<any> {
-    if (typeof identifier !== 'string' || identifier.trim().length === 0) {
-      throw new Error('actorIdentifier is required');
-    }
-
-    if (packId) {
-      const pack = this.resolvePack(packId);
-      const found = await this.findPackActor(pack, identifier);
-      if (!found) {
-        throw new Error(`Actor "${identifier}" not found in compendium ${pack.collection}`);
-      }
-      return found;
-    }
-
-    // 1. UUID (also covers Compendium.world.xxx.Actor.id)
-    if (identifier.includes('.')) {
-      try {
-        const doc = await (globalThis as any).fromUuid(identifier);
-        if (doc?.documentName === 'Actor') return doc;
-      } catch {
-        // not a UUID - fall through to the name/id lookups
-      }
-    }
-
-    const actors = (game as any).actors;
-
-    // 2. World id
-    const byId = actors?.get(identifier);
-    if (byId) return byId;
-
-    // 3. Exact world name
-    const byName = actors?.getName?.(identifier);
-    if (byName) return byName;
-
-    // 4. Case-insensitive partial name
-    const needle = identifier.toLowerCase();
-    const partial: any[] =
-      actors?.filter(
-        (a: any) => typeof a.name === 'string' && a.name.toLowerCase().includes(needle)
-      ) ?? [];
-
-    if (partial.length === 1) return partial[0];
-    if (partial.length > 1) {
-      const candidates = partial.map((a: any) => `${a.name} (${a.id})`).join(', ');
-      throw new Error(`Ambiguous actorIdentifier "${identifier}" - candidates: ${candidates}`);
-    }
-
-    throw new Error(`Actor not found: ${identifier}`);
-  }
-
-  /** Find an actor inside a compendium by id or exact name. */
-  private async findPackActor(pack: any, identifier: string): Promise<any> {
-    const byId = await pack.getDocument(identifier).catch(() => null);
-    if (byId) return byId;
-
-    const byName = await pack.getDocuments({ name: identifier }).catch(() => []);
-    if (Array.isArray(byName) && byName.length > 0) return byName[0];
-
-    const index: any[] = Array.from(await pack.getIndex());
-    const entry = index.find((e: any) => e.name?.toLowerCase() === identifier.toLowerCase());
-    if (entry) return await pack.getDocument(entry._id);
-
-    return null;
+    return await resolveActor(identifier, packId);
   }
 
   /** Resolve a compendium by collection id, then exact label, then machine name. */
   private resolvePack(identifier: string): any {
-    if (typeof identifier !== 'string' || identifier.trim().length === 0) {
-      throw new Error('pack is required');
-    }
-
-    const packs = (game as any).packs;
-    const direct = packs?.get(identifier);
-    if (direct) return direct;
-
-    const all: any[] = Array.from(packs ?? []);
-    const byLabel = all.find(p => p.metadata?.label === identifier);
-    if (byLabel) return byLabel;
-
-    const byName = all.find(p => p.metadata?.name === identifier);
-    if (byName) return byName;
-
-    throw new Error(`Compendium not found: ${identifier}`);
+    return resolvePack(identifier);
   }
 
   /** Run a mutating operation against a pack, temporarily unlocking it if needed. */

@@ -40,6 +40,7 @@
     "eslint-config-prettier": "^9.0.0",
     "eslint-plugin-prettier": "^5.0.0",
     "husky": "^9.1.7",
+    "js-yaml": "^4.3.2",
     "knip": "^5.64.1",
     "lint-staged": "^16.4.0",
     "madge": "^8.0.0",

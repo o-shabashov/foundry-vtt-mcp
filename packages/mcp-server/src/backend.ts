@@ -25,6 +25,7 @@ import { SceneTools } from './tools/scene.js';
 import { ActorCreationTools } from './tools/actor-creation.js';
 import { ActorManagementTools } from './tools/actor-management.js';
 import { RawActorTools } from './tools/raw-actor.js';
+import { SessionTools } from './tools/session/index.js';
 
 import { QuestCreationTools } from './tools/quest-creation.js';
 
@@ -1196,6 +1197,7 @@ async function startBackend(): Promise<void> {
   const actorCreationTools = new ActorCreationTools({ foundryClient, logger });
   const actorManagementTools = new ActorManagementTools({ foundryClient, logger, systemRegistry });
   const rawActorTools = new RawActorTools({ foundryClient, logger });
+  const sessionTools = new SessionTools({ foundryClient, logger });
 
   const dsa5CharacterCreator = new DSA5CharacterCreator({ foundryClient, logger });
 
@@ -1426,6 +1428,8 @@ async function startBackend(): Promise<void> {
     ...actorManagementTools.getToolDefinitions(),
 
     ...rawActorTools.getToolDefinitions(),
+
+    ...sessionTools.getToolDefinitions(),
 
     ...dsa5CharacterCreator.getToolDefinitions(),
 
@@ -1797,7 +1801,16 @@ async function startBackend(): Promise<void> {
 
                   break;
 
+                // Session tools (files, scenes, playlists, journals, combat, chat, loot)
+                // dispatch by name inside SessionTools rather than sixteen cases here.
+
                 default:
+                  if (sessionTools.canHandle(name)) {
+                    result = await sessionTools.handle(name, args);
+
+                    break;
+                  }
+
                   throw new Error(`Unknown tool: ${name}`);
               }
 

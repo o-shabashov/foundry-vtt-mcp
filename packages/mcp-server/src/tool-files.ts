@@ -1,13 +1,14 @@
 /**
- * File hydration for the raw actor tools.
+ * File hydration for the raw actor tools and the session tools.
  *
  * Files live on the machine that runs the stdio wrapper (src/index.ts), while the
  * backend may later move to a different host. So every filesystem access happens
  * here: `hydrateToolArgs` runs before a call_tool request is forwarded and
  * `dehydrateToolResult` runs on the response that comes back.
  *
- * The backend never sees `filePath` / `scriptFile`; it does see `outFile`, but only
- * to decide whether an oversized payload may be returned inline.
+ * The backend never sees `filePath` / `scriptFile` / `uvttFile` / `contentFile` /
+ * `messageFile`; it does see `outFile`, but only to decide whether an oversized
+ * payload may be returned inline.
  *
  * Only Node built-ins are imported here - this module is bundled into
  * dist/index.bundle.cjs by esbuild.
@@ -17,6 +18,36 @@ import * as fs from 'fs';
 import * as path from 'path';
 
 export type ToolArgs = Record<string, any>;
+
+/**
+ * Largest file upload-file will inline as base64. Anything bigger is refused here,
+ * before it can be turned into a multi-megabyte JSON-RPC frame.
+ */
+export const MAX_UPLOAD_BYTES = 25 * 1024 * 1024;
+
+/** MIME types guessed from the file extension for upload-file. */
+const UPLOAD_MIME_TYPES: Record<string, string> = {
+  '.jpg': 'image/jpeg',
+  '.jpeg': 'image/jpeg',
+  '.png': 'image/png',
+  '.webp': 'image/webp',
+  '.gif': 'image/gif',
+  '.svg': 'image/svg+xml',
+  '.mp3': 'audio/mpeg',
+  '.ogg': 'audio/ogg',
+  '.wav': 'audio/wav',
+  '.webm': 'video/webm',
+  '.mp4': 'video/mp4',
+  '.pdf': 'application/pdf',
+  '.json': 'application/json',
+  '.txt': 'text/plain',
+  '.md': 'text/markdown',
+};
+
+const FALLBACK_MIME_TYPE = 'application/octet-stream';
+
+/** Extensions accepted for a journal page body; journal pages hold HTML. */
+const PAGE_CONTENT_EXTENSIONS = ['.html', '.htm', '.txt'];
 
 /** Result of hydrating tool arguments: either rewritten args or a user-facing error. */
 export type HydrateOutcome = { ok: true; args: ToolArgs } | { ok: false; error: string };
@@ -106,6 +137,18 @@ export function hydrateToolArgs(name: string, args: ToolArgs | undefined): Hydra
       case 'run-script':
         hydrateRunScript(next);
         break;
+      case 'upload-file':
+        hydrateUploadFile(next);
+        break;
+      case 'manage-walls':
+        hydrateManageWalls(next);
+        break;
+      case 'manage-journal':
+        hydrateManageJournal(next);
+        break;
+      case 'send-chat':
+        hydrateSendChat(next);
+        break;
       default:
         break;
     }
@@ -181,6 +224,143 @@ function hydrateRunScript(args: ToolArgs): void {
 
   args.script = readTextFile(scriptFile, 'scriptFile');
   delete args.scriptFile;
+}
+
+// ── session tools ─────────────────────────────────────────────────────────────
+
+function formatMegabytes(bytes: number): string {
+  return (bytes / (1024 * 1024)).toFixed(1);
+}
+
+/** Guess a MIME type from the file name, falling back to a generic binary type. */
+function mimeTypeFor(fileName: string): string {
+  const extension = path.extname(fileName).toLowerCase();
+  return UPLOAD_MIME_TYPES[extension] ?? FALLBACK_MIME_TYPE;
+}
+
+function hydrateUploadFile(args: ToolArgs): void {
+  const filePath = nonEmptyString(args.filePath);
+  const hasInline = nonEmptyString(args.fileData) !== undefined;
+
+  if (hasInline && filePath) {
+    throw new Error('upload-file takes exactly one of "fileData" or "filePath", not both');
+  }
+  if (!hasInline && !filePath) {
+    throw new Error('upload-file requires either "filePath" or inline base64 "fileData"');
+  }
+  if (!filePath) {
+    if (!nonEmptyString(args.fileName)) {
+      throw new Error('upload-file with inline "fileData" also requires "fileName"');
+    }
+    if (!nonEmptyString(args.mimeType)) {
+      args.mimeType = mimeTypeFor(String(args.fileName));
+    }
+    return;
+  }
+
+  const resolved = path.resolve(filePath);
+
+  let stats: fs.Stats;
+  try {
+    stats = fs.statSync(resolved);
+  } catch (error) {
+    throw new Error(`Cannot read "filePath" file ${resolved}: ${errorMessage(error)}`);
+  }
+  if (!stats.isFile()) {
+    throw new Error(`"filePath" ${resolved} is not a regular file`);
+  }
+  if (stats.size > MAX_UPLOAD_BYTES) {
+    throw new Error(
+      `"filePath" ${resolved} is ${formatMegabytes(stats.size)} MB, over the ` +
+        `${formatMegabytes(MAX_UPLOAD_BYTES)} MB upload limit. Copy the file to the Foundry host ` +
+        'over ssh/scp into its Data directory instead, then use that path directly.'
+    );
+  }
+
+  let bytes: Buffer;
+  try {
+    bytes = fs.readFileSync(resolved);
+  } catch (error) {
+    throw new Error(`Cannot read "filePath" file ${resolved}: ${errorMessage(error)}`);
+  }
+
+  args.fileData = bytes.toString('base64');
+  if (!nonEmptyString(args.fileName)) args.fileName = path.basename(resolved);
+  if (!nonEmptyString(args.mimeType)) args.mimeType = mimeTypeFor(String(args.fileName));
+  delete args.filePath;
+}
+
+function hydrateManageWalls(args: ToolArgs): void {
+  const uvttFile = nonEmptyString(args.uvttFile);
+  if (!uvttFile) return;
+
+  if (args.uvtt !== undefined) {
+    throw new Error('manage-walls takes exactly one of "uvtt" or "uvttFile", not both');
+  }
+
+  const parsed = readJsonFile(uvttFile, 'uvttFile');
+  if (!isPlainObject(parsed)) {
+    throw new Error(
+      `"uvttFile" file ${path.resolve(uvttFile)} must hold a Universal VTT JSON object`
+    );
+  }
+
+  args.uvtt = parsed;
+  delete args.uvttFile;
+}
+
+function hydrateManageJournal(args: ToolArgs): void {
+  const pages = args.pages;
+  if (!Array.isArray(pages)) return;
+
+  args.pages = pages.map((page, index) => {
+    if (!isPlainObject(page)) return page;
+
+    const contentFile = nonEmptyString(page.contentFile);
+    if (!contentFile) return page;
+
+    if (page.content !== undefined) {
+      throw new Error(
+        `manage-journal page ${index} takes exactly one of "content" or "contentFile", not both`
+      );
+    }
+
+    const resolved = path.resolve(contentFile);
+    const extension = path.extname(contentFile).toLowerCase();
+
+    if (extension === '.md' || extension === '.markdown') {
+      throw new Error(
+        `manage-journal page ${index} "contentFile" ${resolved} is Markdown. Journal pages store ` +
+          'HTML, so convert it first and pass the .html file.'
+      );
+    }
+    if (!PAGE_CONTENT_EXTENSIONS.includes(extension)) {
+      throw new Error(
+        `manage-journal page ${index} "contentFile" ${resolved} must be ` +
+          `${PAGE_CONTENT_EXTENSIONS.join(', ')}, got "${extension || 'no extension'}"`
+      );
+    }
+
+    const next: ToolArgs = { ...page, content: readTextFile(contentFile, 'contentFile') };
+    delete next.contentFile;
+    return next;
+  });
+}
+
+function hydrateSendChat(args: ToolArgs): void {
+  const messageFile = nonEmptyString(args.messageFile);
+  const hasInline = nonEmptyString(args.message) !== undefined;
+
+  if (hasInline && messageFile) {
+    throw new Error('send-chat takes exactly one of "message" or "messageFile", not both');
+  }
+  if (!hasInline && !messageFile) {
+    throw new Error('send-chat requires either "message" or "messageFile"');
+  }
+  if (!messageFile) return;
+
+  args.message = readTextFile(messageFile, 'messageFile');
+  delete args.messageFile;
 }
 
 // ── dehydration ───────────────────────────────────────────────────────────────

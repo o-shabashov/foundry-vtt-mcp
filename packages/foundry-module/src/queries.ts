@@ -2,6 +2,7 @@ import { MODULE_ID } from './constants.js';
 import { FoundryDataAccess } from './data-access.js';
 import { ComfyUIManager } from './comfyui-manager.js';
 import { RawHandlers } from './raw-handlers.js';
+import { registerSessionHandlers } from './session/index.js';
 
 export class QueryHandlers {
   public dataAccess: FoundryDataAccess;
@@ -164,6 +165,10 @@ export class QueryHandlers {
 
     // Raw document queries (raw.*), kept in their own file
     this.rawHandlers.registerHandlers();
+
+    // Session preparation queries (files.*, scene.*, playlist.*, journal.*,
+    // ownership.*, combat.*, chat.*, table.*, piles.*), kept in their own folder
+    registerSessionHandlers(this.dataAccess);
   }
 
   /**

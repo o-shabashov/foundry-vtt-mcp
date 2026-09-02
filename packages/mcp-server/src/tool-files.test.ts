@@ -10,7 +10,12 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
-import { hydrateToolArgs, dehydrateToolResult, toolErrorResult } from './tool-files.js';
+import {
+  hydrateToolArgs,
+  dehydrateToolResult,
+  toolErrorResult,
+  MAX_UPLOAD_BYTES,
+} from './tool-files.js';
 
 let tmpDir: string;
 
@@ -254,6 +259,295 @@ describe('hydrateToolArgs: run-script', () => {
     const error = expectError(hydrateToolArgs('run-script', { scriptFile: missing }));
 
     expect(error).toContain('Cannot read "scriptFile" file');
+  });
+});
+
+// ── upload-file ───────────────────────────────────────────────────────────────
+
+describe('hydrateToolArgs: upload-file', () => {
+  const targetDir = 'worlds/my-world/maps';
+
+  function writeBinary(fileName: string, bytes: Buffer): string {
+    const filePath = path.join(tmpDir, fileName);
+    fs.writeFileSync(filePath, bytes);
+    return filePath;
+  }
+
+  it('reads the file as base64 and fills fileName and mimeType from the path', () => {
+    const bytes = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x00, 0xff]);
+    const filePath = writeBinary('crypt.png', bytes);
+
+    const args = expectOk(hydrateToolArgs('upload-file', { targetDir, filePath }));
+
+    expect(args.fileData).toBe(bytes.toString('base64'));
+    expect(Buffer.from(args.fileData, 'base64')).toEqual(bytes);
+    expect(args.fileName).toBe('crypt.png');
+    expect(args.mimeType).toBe('image/png');
+    expect(args.filePath).toBeUndefined();
+    expect(args.targetDir).toBe(targetDir);
+  });
+
+  it('guesses the mime type from the extension for every documented format', () => {
+    const expected: Record<string, string> = {
+      'a.jpg': 'image/jpeg',
+      'a.jpeg': 'image/jpeg',
+      'a.png': 'image/png',
+      'a.webp': 'image/webp',
+      'a.gif': 'image/gif',
+      'a.svg': 'image/svg+xml',
+      'a.mp3': 'audio/mpeg',
+      'a.ogg': 'audio/ogg',
+      'a.wav': 'audio/wav',
+      'a.webm': 'video/webm',
+      'a.mp4': 'video/mp4',
+      'a.pdf': 'application/pdf',
+      'a.json': 'application/json',
+      'a.txt': 'text/plain',
+      'a.md': 'text/markdown',
+      'a.bin': 'application/octet-stream',
+      noextension: 'application/octet-stream',
+    };
+
+    for (const [fileName, mimeType] of Object.entries(expected)) {
+      const filePath = writeBinary(fileName, Buffer.from('x'));
+      const args = expectOk(hydrateToolArgs('upload-file', { targetDir, filePath }));
+      expect(args.mimeType, fileName).toBe(mimeType);
+    }
+  });
+
+  it('keeps an explicit fileName and mimeType', () => {
+    const filePath = writeBinary('crypt.png', Buffer.from('x'));
+
+    const args = expectOk(
+      hydrateToolArgs('upload-file', {
+        targetDir,
+        filePath,
+        fileName: 'склеп.png',
+        mimeType: 'image/apng',
+      })
+    );
+
+    expect(args.fileName).toBe('склеп.png');
+    expect(args.mimeType).toBe('image/apng');
+  });
+
+  it('fills the mime type for an inline base64 payload as well', () => {
+    const args = expectOk(
+      hydrateToolArgs('upload-file', { targetDir, fileData: 'AAAA', fileName: 'battle.mp3' })
+    );
+
+    expect(args.mimeType).toBe('audio/mpeg');
+    expect(args.fileData).toBe('AAAA');
+  });
+
+  it('refuses a file over the 25 MB limit and points at ssh', () => {
+    const filePath = path.join(tmpDir, 'huge.webp');
+    fs.writeFileSync(filePath, '');
+    fs.truncateSync(filePath, MAX_UPLOAD_BYTES + 1);
+
+    const error = expectError(hydrateToolArgs('upload-file', { targetDir, filePath }));
+
+    expect(error).toContain('over the 25.0 MB upload limit');
+    expect(error).toContain('ssh/scp');
+    expect(error).toContain(filePath);
+  });
+
+  it('accepts a file exactly on the limit', () => {
+    const filePath = path.join(tmpDir, 'exact.webp');
+    fs.writeFileSync(filePath, '');
+    fs.truncateSync(filePath, MAX_UPLOAD_BYTES);
+
+    const args = expectOk(hydrateToolArgs('upload-file', { targetDir, filePath }));
+
+    expect(args.fileName).toBe('exact.webp');
+  });
+
+  it('rejects both fileData and filePath, and neither', () => {
+    const filePath = writeBinary('crypt.png', Buffer.from('x'));
+
+    expect(
+      expectError(hydrateToolArgs('upload-file', { targetDir, filePath, fileData: 'AAAA' }))
+    ).toMatch(/exactly one of "fileData" or "filePath"/);
+    expect(expectError(hydrateToolArgs('upload-file', { targetDir }))).toMatch(
+      /either "filePath" or inline base64 "fileData"/
+    );
+  });
+
+  it('reports a missing file and a directory instead of throwing', () => {
+    const missing = path.join(tmpDir, 'nope.webp');
+
+    expect(expectError(hydrateToolArgs('upload-file', { targetDir, filePath: missing }))).toContain(
+      'Cannot read "filePath" file'
+    );
+    expect(expectError(hydrateToolArgs('upload-file', { targetDir, filePath: tmpDir }))).toContain(
+      'is not a regular file'
+    );
+  });
+});
+
+// ── manage-walls ──────────────────────────────────────────────────────────────
+
+describe('hydrateToolArgs: manage-walls', () => {
+  const uvtt = {
+    resolution: { pixels_per_grid: 100, map_size: { x: 30, y: 20 } },
+    line_of_sight: [[{ x: 0, y: 0 }, { x: 5, y: 0 }]],
+    portals: [],
+  };
+
+  it('reads uvttFile into uvtt', () => {
+    const uvttFile = writeFixture('crypt.dd2vtt', uvtt);
+
+    const args = expectOk(hydrateToolArgs('manage-walls', { action: 'import-uvtt', uvttFile }));
+
+    expect(args.uvtt).toEqual(uvtt);
+    expect(args.uvttFile).toBeUndefined();
+  });
+
+  it('leaves inline uvtt untouched', () => {
+    const args = expectOk(hydrateToolArgs('manage-walls', { action: 'import-uvtt', uvtt }));
+
+    expect(args.uvtt).toBe(uvtt);
+  });
+
+  it('rejects both uvtt and uvttFile', () => {
+    const uvttFile = writeFixture('crypt.dd2vtt', uvtt);
+
+    const error = expectError(
+      hydrateToolArgs('manage-walls', { action: 'import-uvtt', uvtt, uvttFile })
+    );
+
+    expect(error).toMatch(/exactly one of "uvtt" or "uvttFile"/);
+  });
+
+  it('rejects a uvtt file that is not a JSON object', () => {
+    const uvttFile = writeFixture('crypt.dd2vtt', [1, 2, 3]);
+
+    expect(
+      expectError(hydrateToolArgs('manage-walls', { action: 'import-uvtt', uvttFile }))
+    ).toMatch(/must hold a Universal VTT JSON object/);
+  });
+
+  it('reports a missing uvtt file', () => {
+    const missing = path.join(tmpDir, 'gone.dd2vtt');
+
+    expect(
+      expectError(hydrateToolArgs('manage-walls', { action: 'import-uvtt', uvttFile: missing }))
+    ).toContain('Cannot read "uvttFile" file');
+  });
+});
+
+// ── manage-journal ────────────────────────────────────────────────────────────
+
+describe('hydrateToolArgs: manage-journal', () => {
+  it('reads an .html page body into content', () => {
+    const contentFile = writeFixture('letter.html', '<p>Burn this.</p>');
+
+    const args = expectOk(
+      hydrateToolArgs('manage-journal', {
+        action: 'create',
+        name: 'Handouts',
+        pages: [{ name: 'Letter', contentFile }],
+      })
+    );
+
+    expect(args.pages[0]).toEqual({ name: 'Letter', content: '<p>Burn this.</p>' });
+  });
+
+  it('reads a .txt page body as it is and leaves other pages alone', () => {
+    const contentFile = writeFixture('notes.txt', 'plain text');
+    const imagePage = { name: 'Map', type: 'image', src: 'maps/crypt.webp' };
+
+    const args = expectOk(
+      hydrateToolArgs('manage-journal', {
+        action: 'create',
+        name: 'Handouts',
+        pages: [imagePage, { name: 'Notes', contentFile }],
+      })
+    );
+
+    expect(args.pages[0]).toBe(imagePage);
+    expect(args.pages[1]).toEqual({ name: 'Notes', content: 'plain text' });
+  });
+
+  it('refuses Markdown and tells the caller to convert it first', () => {
+    const contentFile = writeFixture('letter.md', '# Burn this');
+
+    const error = expectError(
+      hydrateToolArgs('manage-journal', {
+        action: 'create',
+        name: 'Handouts',
+        pages: [{ name: 'Letter', contentFile }],
+      })
+    );
+
+    expect(error).toContain('is Markdown');
+    expect(error).toContain('convert it first');
+  });
+
+  it('refuses an extension that is neither html nor txt', () => {
+    const contentFile = writeFixture('letter.docx', 'binary-ish');
+
+    expect(
+      expectError(
+        hydrateToolArgs('manage-journal', {
+          action: 'create',
+          name: 'Handouts',
+          pages: [{ name: 'Letter', contentFile }],
+        })
+      )
+    ).toMatch(/must be \.html, \.htm, \.txt/);
+  });
+
+  it('rejects a page carrying both content and contentFile', () => {
+    const contentFile = writeFixture('letter.html', '<p>x</p>');
+
+    expect(
+      expectError(
+        hydrateToolArgs('manage-journal', {
+          action: 'create',
+          name: 'Handouts',
+          pages: [{ name: 'Letter', content: '<p>y</p>', contentFile }],
+        })
+      )
+    ).toMatch(/page 0 takes exactly one of "content" or "contentFile"/);
+  });
+
+  it('tolerates a call with no pages at all', () => {
+    const args = expectOk(hydrateToolArgs('manage-journal', { action: 'list' }));
+
+    expect(args).toEqual({ action: 'list' });
+  });
+});
+
+// ── send-chat ─────────────────────────────────────────────────────────────────
+
+describe('hydrateToolArgs: send-chat', () => {
+  it('reads messageFile into message verbatim', () => {
+    const messageFile = writeFixture('read-aloud.html', '<p>The door groans open.</p>\n');
+
+    const args = expectOk(hydrateToolArgs('send-chat', { messageFile }));
+
+    expect(args.message).toBe('<p>The door groans open.</p>\n');
+    expect(args.messageFile).toBeUndefined();
+  });
+
+  it('rejects both message and messageFile, and neither', () => {
+    const messageFile = writeFixture('read-aloud.html', '<p>x</p>');
+
+    expect(
+      expectError(hydrateToolArgs('send-chat', { message: '<p>y</p>', messageFile }))
+    ).toMatch(/exactly one of "message" or "messageFile"/);
+    expect(expectError(hydrateToolArgs('send-chat', { speaker: 'Ozhog' }))).toMatch(
+      /either "message" or "messageFile"/
+    );
+  });
+
+  it('reports a missing message file', () => {
+    const missing = path.join(tmpDir, 'gone.html');
+
+    expect(expectError(hydrateToolArgs('send-chat', { messageFile: missing }))).toContain(
+      'Cannot read "messageFile" file'
+    );
   });
 });
 

@@ -23,6 +23,7 @@ const importDist = async (relativePath) =>
 const [{ config }, { Logger }, { FoundryClient }, { CharacterTools }, { CompendiumTools }, { SceneTools },
   { ActorCreationTools }, { QuestCreationTools }, { DiceRollTools }, { CampaignManagementTools },
   { OwnershipTools }, { TokenManipulationTools }, { MapGenerationTools }, { RawActorTools },
+  { SessionTools, SESSION_TOOL_NAMES },
   { getSystemRegistry },
   { DnD5eAdapter }, { PF2eAdapter }, { DSA5Adapter }, { CosmereRpgAdapter }] = await Promise.all([
   importDist('config.js'),
@@ -39,6 +40,7 @@ const [{ config }, { Logger }, { FoundryClient }, { CharacterTools }, { Compendi
   importDist('tools/token-manipulation.js'),
   importDist('tools/map-generation.js'),
   importDist('tools/raw-actor.js'),
+  importDist('tools/session/index.js'),
   importDist('systems/index.js'),
   importDist('systems/dnd5e/adapter.js'),
   importDist('systems/pf2e/adapter.js'),
@@ -67,6 +69,7 @@ const tools = [
   ...new TokenManipulationTools({ foundryClient, logger }).getToolDefinitions(),
   ...new MapGenerationTools({ foundryClient, logger, backendComfyUIHandlers: {} }).getToolDefinitions(),
   ...new RawActorTools({ foundryClient, logger }).getToolDefinitions(),
+  ...new SessionTools({ foundryClient, logger }).getToolDefinitions(),
 ];
 
 if (!tools.length) {
@@ -109,6 +112,42 @@ for (const name of rawActorToolNames) {
 const importActorDescription = tools.find((tool) => tool.name === 'import-actor').description;
 if (!importActorDescription.includes('full Foundry actor source including items with activities')) {
   fail('Tool "import-actor" no longer advertises that it takes full actor source with activities.');
+}
+
+const expectedSessionToolNames = [
+  'upload-file',
+  'manage-files',
+  'manage-scene',
+  'place-tokens',
+  'manage-scene-lights',
+  'manage-walls',
+  'manage-tiles',
+  'manage-scene-notes',
+  'manage-playlists',
+  'manage-journal',
+  'show-to-players',
+  'manage-ownership',
+  'manage-combat',
+  'send-chat',
+  'manage-rolltable',
+  'manage-loot-pile',
+];
+
+if (SESSION_TOOL_NAMES.join(',') !== expectedSessionToolNames.join(',')) {
+  fail(
+    `SESSION_TOOL_NAMES drifted from the expected set. Got: ${SESSION_TOOL_NAMES.join(', ')}`,
+  );
+}
+
+for (const name of expectedSessionToolNames) {
+  if (!tools.some((tool) => tool.name === name)) {
+    fail(`Expected session tool "${name}" to be present but it was not found.`);
+  }
+}
+
+const uploadFileDescription = tools.find((tool) => tool.name === 'upload-file').description;
+if (!uploadFileDescription.includes('25 MB')) {
+  fail('Tool "upload-file" no longer advertises the 25 MB upload limit.');
 }
 
 const switchSceneSchema = tools.find((tool) => tool.name === 'switch-scene')?.inputSchema;
