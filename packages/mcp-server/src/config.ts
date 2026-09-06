@@ -46,6 +46,22 @@ const ConfigSchema = z.object({
     host: z.string().default('127.0.0.1'),
     pythonCommand: z.string().default('python/python.exe'), // Will be platform-specific
   }),
+  // Music generation goes through a Suno proxy provider; the backend holds the key.
+  music: z.object({
+    provider: z.enum(['apiframe', 'sunoapi']).default('apiframe'),
+    apiframe: z.object({
+      apiKey: z.string().default(''),
+      baseUrl: z.string().default('https://api.apiframe.ai'),
+    }),
+    sunoapi: z.object({
+      apiKey: z.string().default(''),
+      baseUrl: z.string().default('https://api.sunoapi.org'),
+    }),
+    // sunoapi.org demands a callback URL even when the caller polls, so this is a stub.
+    callbackUrl: z.string().default('https://example.invalid/suno-callback'),
+    pollIntervalMs: z.number().min(500).max(60000).default(5000),
+    timeoutMs: z.number().min(1000).max(3600000).default(300000),
+  }),
   toolResponseMaxChars: z.number().min(256).max(500000).default(20000),
   server: z.object({
     name: z.string().default('foundry-mcp-server'),
@@ -91,6 +107,20 @@ const rawConfig = {
     installPath: process.env.COMFYUI_INSTALL_PATH || getDefaultComfyUIDir(),
     host: process.env.COMFYUI_HOST || '127.0.0.1',
     pythonCommand: process.env.COMFYUI_PYTHON_COMMAND || 'python/python.exe',
+  },
+  music: {
+    provider: (process.env.MUSIC_PROVIDER || 'apiframe') as 'apiframe' | 'sunoapi',
+    apiframe: {
+      apiKey: process.env.APIFRAME_API_KEY || '',
+      baseUrl: process.env.APIFRAME_BASE_URL || 'https://api.apiframe.ai',
+    },
+    sunoapi: {
+      apiKey: process.env.SUNOAPI_API_KEY || '',
+      baseUrl: process.env.SUNOAPI_BASE_URL || 'https://api.sunoapi.org',
+    },
+    callbackUrl: process.env.MUSIC_CALLBACK_URL || 'https://example.invalid/suno-callback',
+    pollIntervalMs: parseInt(process.env.MUSIC_POLL_INTERVAL_MS || '5000', 10),
+    timeoutMs: parseInt(process.env.MUSIC_TIMEOUT_MS || '300000', 10),
   },
   toolResponseMaxChars: parseInt(process.env.TOOL_RESPONSE_MAX_CHARS || '20000', 10),
   server: {

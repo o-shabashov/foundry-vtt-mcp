@@ -26,6 +26,7 @@ import { ActorCreationTools } from './tools/actor-creation.js';
 import { ActorManagementTools } from './tools/actor-management.js';
 import { RawActorTools } from './tools/raw-actor.js';
 import { SessionTools } from './tools/session/index.js';
+import { MusicTools } from './tools/music/index.js';
 
 import { QuestCreationTools } from './tools/quest-creation.js';
 
@@ -1198,6 +1199,7 @@ async function startBackend(): Promise<void> {
   const actorManagementTools = new ActorManagementTools({ foundryClient, logger, systemRegistry });
   const rawActorTools = new RawActorTools({ foundryClient, logger });
   const sessionTools = new SessionTools({ foundryClient, logger });
+  const musicTools = new MusicTools({ foundryClient, logger, config: config.music });
 
   const dsa5CharacterCreator = new DSA5CharacterCreator({ foundryClient, logger });
 
@@ -1430,6 +1432,8 @@ async function startBackend(): Promise<void> {
     ...rawActorTools.getToolDefinitions(),
 
     ...sessionTools.getToolDefinitions(),
+
+    ...musicTools.getToolDefinitions(),
 
     ...dsa5CharacterCreator.getToolDefinitions(),
 
@@ -1802,11 +1806,18 @@ async function startBackend(): Promise<void> {
                   break;
 
                 // Session tools (files, scenes, playlists, journals, combat, chat, loot)
-                // dispatch by name inside SessionTools rather than sixteen cases here.
+                // and music tools dispatch by name inside their own class rather than
+                // twenty cases here.
 
                 default:
                   if (sessionTools.canHandle(name)) {
                     result = await sessionTools.handle(name, args);
+
+                    break;
+                  }
+
+                  if (musicTools.canHandle(name)) {
+                    result = await musicTools.handle(name, args);
 
                     break;
                   }

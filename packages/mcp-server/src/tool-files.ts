@@ -366,11 +366,19 @@ function hydrateSendChat(args: ToolArgs): void {
 // ── dehydration ───────────────────────────────────────────────────────────────
 
 /**
- * Post-process a backend response. Only export-actor with "outFile" is affected:
- * the actor source is written to disk and the response shrinks to a summary.
- * Anything unexpected (error response, non-JSON text, missing "data") passes through.
+ * Post-process a backend response. Two tools are affected: export-actor with
+ * "outFile" writes the actor source to disk and shrinks to a summary, and the music
+ * tools with "outDir" download the finished mp3 files next to the session notes.
+ * Anything unexpected (error response, non-JSON text, missing fields) passes through.
  */
-export function dehydrateToolResult(name: string, args: ToolArgs | undefined, result: any): any {
+export async function dehydrateToolResult(
+  name: string,
+  args: ToolArgs | undefined,
+  result: any
+): Promise<any> {
+  if (name === 'generate-music' || name === 'music-status') {
+    return await dehydrateMusicTracks(args, result);
+  }
   if (name !== 'export-actor') return result;
 
   const outFile = nonEmptyString(args?.outFile);
@@ -406,4 +414,97 @@ export function dehydrateToolResult(name: string, args: ToolArgs | undefined, re
   } catch (error) {
     return toolErrorResult(`Cannot write "outFile" ${resolved}: ${errorMessage(error)}`);
   }
+}
+
+// -- music tracks --------------------------------------------------------------
+
+/**
+ * File name for the nth track of a task. The backend names the uploads the same way
+ * (tools/music/index.ts), so the local copy and the Foundry copy match.
+ */
+function musicFileName(base: string, index: number): string {
+  const cleaned = base
+    .replace(/[\\/:*?"<>|]/g, '-')
+    .replace(/\p{Cc}/gu, '-')
+    .replace(/\s+/g, ' ')
+    .trim();
+  const safe = cleaned.length > 0 ? cleaned : 'Suno';
+  return index === 0 ? `${safe}.mp3` : `${safe} (${index + 1}).mp3`;
+}
+
+/** Pull one track off the provider CDN into memory. */
+async function downloadTrack(url: string): Promise<Buffer> {
+  const response = await fetch(url);
+  if (!response.ok) {
+    throw new Error(`HTTP ${response.status}`);
+  }
+  return Buffer.from(await response.arrayBuffer());
+}
+
+/**
+ * Save the finished tracks of generate-music / music-status into "outDir" on this
+ * machine and note the destination as "localPath" on every track. A download that
+ * fails leaves the track alone and adds a line to "warnings", so one unreachable URL
+ * never costs the whole answer.
+ */
+async function dehydrateMusicTracks(args: ToolArgs | undefined, result: any): Promise<any> {
+  const outDir = nonEmptyString(args?.outDir);
+  if (!outDir) return result;
+  if (!result || result.isError) return result;
+
+  const text = result?.content?.[0]?.text;
+  if (typeof text !== 'string') return result;
+
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(text);
+  } catch {
+    return result;
+  }
+  if (!isPlainObject(parsed) || !Array.isArray(parsed.tracks)) return result;
+
+  const warnings: string[] = Array.isArray(parsed.warnings) ? [...parsed.warnings] : [];
+  const resolved = path.resolve(outDir);
+
+  try {
+    fs.mkdirSync(resolved, { recursive: true });
+  } catch (error) {
+    warnings.push(`Cannot create "outDir" ${resolved}: ${errorMessage(error)}`);
+    parsed.warnings = warnings;
+    return { content: [{ type: 'text', text: JSON.stringify(parsed) }] };
+  }
+
+  const base =
+    nonEmptyString(args?.fileName) ??
+    nonEmptyString(args?.title) ??
+    `Suno ${nonEmptyString((parsed as any).taskId) ?? 'track'}`;
+
+  for (let index = 0; index < parsed.tracks.length; index++) {
+    const track = parsed.tracks[index];
+    if (!isPlainObject(track)) continue;
+
+    const audioUrl = nonEmptyString(track.audioUrl);
+    if (!audioUrl) continue;
+
+    const fileName = musicFileName(base, index);
+    const target = path.join(resolved, fileName);
+
+    try {
+      const bytes = await downloadTrack(audioUrl);
+      if (bytes.byteLength > MAX_UPLOAD_BYTES) {
+        warnings.push(
+          `"${fileName}" is ${formatMegabytes(bytes.byteLength)} MB, over the ` +
+            `${formatMegabytes(MAX_UPLOAD_BYTES)} MB limit. Download it by hand from ${audioUrl}.`
+        );
+        continue;
+      }
+      fs.writeFileSync(target, bytes);
+      track.localPath = target;
+    } catch (error) {
+      warnings.push(`Cannot save "${fileName}" from ${audioUrl}: ${errorMessage(error)}`);
+    }
+  }
+
+  parsed.warnings = warnings;
+  return { content: [{ type: 'text', text: JSON.stringify(parsed) }] };
 }

@@ -6,7 +6,7 @@
  * would test nothing worth testing.
  */
 
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
@@ -143,7 +143,11 @@ describe('hydrateToolArgs: manage-actor-items', () => {
     const filePath = writeFixture('items.json', [{ name: 'Blade', type: 'weapon' }]);
 
     const args = expectOk(
-      hydrateToolArgs('manage-actor-items', { actorIdentifier: 'Goblin Boss', action: 'create', filePath })
+      hydrateToolArgs('manage-actor-items', {
+        actorIdentifier: 'Goblin Boss',
+        action: 'create',
+        filePath,
+      })
     );
 
     expect(args.items).toEqual([{ name: 'Blade', type: 'weapon' }]);
@@ -170,7 +174,11 @@ describe('hydrateToolArgs: manage-actor-items', () => {
     const filePath = writeFixture('items.json', [{ name: 'Blade' }]);
 
     const error = expectError(
-      hydrateToolArgs('manage-actor-items', { actorIdentifier: 'Goblin Boss', action: 'list', filePath })
+      hydrateToolArgs('manage-actor-items', {
+        actorIdentifier: 'Goblin Boss',
+        action: 'list',
+        filePath,
+      })
     );
 
     expect(error).toMatch(/applies to action "create" or "update-raw" only/);
@@ -390,7 +398,12 @@ describe('hydrateToolArgs: upload-file', () => {
 describe('hydrateToolArgs: manage-walls', () => {
   const uvtt = {
     resolution: { pixels_per_grid: 100, map_size: { x: 30, y: 20 } },
-    line_of_sight: [[{ x: 0, y: 0 }, { x: 5, y: 0 }]],
+    line_of_sight: [
+      [
+        { x: 0, y: 0 },
+        { x: 5, y: 0 },
+      ],
+    ],
     portals: [],
   };
 
@@ -534,9 +547,9 @@ describe('hydrateToolArgs: send-chat', () => {
   it('rejects both message and messageFile, and neither', () => {
     const messageFile = writeFixture('read-aloud.html', '<p>x</p>');
 
-    expect(
-      expectError(hydrateToolArgs('send-chat', { message: '<p>y</p>', messageFile }))
-    ).toMatch(/exactly one of "message" or "messageFile"/);
+    expect(expectError(hydrateToolArgs('send-chat', { message: '<p>y</p>', messageFile }))).toMatch(
+      /exactly one of "message" or "messageFile"/
+    );
     expect(expectError(hydrateToolArgs('send-chat', { speaker: 'Ozhog' }))).toMatch(
       /either "message" or "messageFile"/
     );
@@ -577,7 +590,7 @@ describe('dehydrateToolResult: export-actor', () => {
     return { content: [{ type: 'text', text: JSON.stringify(payload) }] };
   }
 
-  it('writes the actor source and returns a summary without data', () => {
+  it('writes the actor source and returns a summary without data', async () => {
     const outFile = path.join(tmpDir, 'nested', 'ozhog.json');
     const result = backendResult({
       uuid: 'Actor.abc',
@@ -587,7 +600,11 @@ describe('dehydrateToolResult: export-actor', () => {
       data: actorSource,
     });
 
-    const out = dehydrateToolResult('export-actor', { actorIdentifier: 'Goblin Boss', outFile }, result);
+    const out = await dehydrateToolResult(
+      'export-actor',
+      { actorIdentifier: 'Goblin Boss', outFile },
+      result
+    );
     const summary = JSON.parse(out.content[0].text);
 
     expect(summary).toEqual({
@@ -606,44 +623,191 @@ describe('dehydrateToolResult: export-actor', () => {
     expect(summary.bytes).toBe(Buffer.byteLength(onDisk, 'utf8'));
   });
 
-  it('passes the response through when no outFile is given', () => {
+  it('passes the response through when no outFile is given', async () => {
     const result = backendResult({ uuid: 'Actor.abc', data: actorSource });
 
-    expect(dehydrateToolResult('export-actor', { actorIdentifier: 'Goblin Boss' }, result)).toBe(result);
+    await expect(
+      dehydrateToolResult('export-actor', { actorIdentifier: 'Goblin Boss' }, result)
+    ).resolves.toBe(result);
   });
 
-  it('passes error responses through untouched', () => {
+  it('passes error responses through untouched', async () => {
     const outFile = path.join(tmpDir, 'never.json');
     const result = { content: [{ type: 'text', text: 'Error: no such actor' }], isError: true };
 
-    expect(dehydrateToolResult('export-actor', { outFile }, result)).toBe(result);
+    await expect(dehydrateToolResult('export-actor', { outFile }, result)).resolves.toBe(result);
     expect(fs.existsSync(outFile)).toBe(false);
   });
 
-  it('passes non-JSON text through untouched', () => {
+  it('passes non-JSON text through untouched', async () => {
     const outFile = path.join(tmpDir, 'never.json');
     const result = { content: [{ type: 'text', text: 'plain text' }] };
 
-    expect(dehydrateToolResult('export-actor', { outFile }, result)).toBe(result);
+    await expect(dehydrateToolResult('export-actor', { outFile }, result)).resolves.toBe(result);
     expect(fs.existsSync(outFile)).toBe(false);
   });
 
-  it('reports a write failure as a tool error', () => {
+  it('reports a write failure as a tool error', async () => {
     // A path under an existing regular file cannot be created.
     const blocker = writeFixture('blocker', 'not a directory');
     const outFile = path.join(blocker, 'actor.json');
     const result = backendResult({ uuid: 'Actor.abc', data: actorSource });
 
-    const out = dehydrateToolResult('export-actor', { outFile }, result);
+    const out = await dehydrateToolResult('export-actor', { outFile }, result);
 
     expect(out.isError).toBe(true);
     expect(out.content[0].text).toContain('Cannot write "outFile"');
   });
 
-  it('leaves other tools alone', () => {
+  it('leaves other tools alone', async () => {
     const result = backendResult({ anything: true });
 
-    expect(dehydrateToolResult('manage-actor-items', { outFile: 'x.json' }, result)).toBe(result);
+    await expect(
+      dehydrateToolResult('manage-actor-items', { outFile: 'x.json' }, result)
+    ).resolves.toBe(result);
+  });
+});
+
+describe('dehydrateToolResult: music tracks', () => {
+  const mp3 = Buffer.from('id3-track-bytes');
+
+  function backendResult(payload: unknown) {
+    return { content: [{ type: 'text', text: JSON.stringify(payload) }] };
+  }
+
+  function twoTracks() {
+    return backendResult({
+      provider: 'apiframe',
+      taskId: 'job-1',
+      status: 'complete',
+      tracks: [
+        { id: 't1', title: 'Ozhog', durationSec: 180, audioUrl: 'https://cdn.example.com/t1.mp3' },
+        { id: 't2', title: 'Ozhog', durationSec: 175, audioUrl: 'https://cdn.example.com/t2.mp3' },
+      ],
+      warnings: [],
+    });
+  }
+
+  /** Serve every download from one buffer, or fail the request with a status. */
+  function stubFetch(bytes: Buffer | null, status = 200) {
+    const fetchMock = vi.fn(async () => ({
+      ok: status >= 200 && status < 300,
+      status,
+      arrayBuffer: async () => {
+        const source = bytes ?? Buffer.alloc(0);
+        return source.buffer.slice(source.byteOffset, source.byteOffset + source.byteLength);
+      },
+    }));
+    vi.stubGlobal('fetch', fetchMock);
+    return fetchMock;
+  }
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it('saves both takes under the file name and notes the local path', async () => {
+    const fetchMock = stubFetch(mp3);
+    const outDir = path.join(tmpDir, 'session-15');
+
+    const out = await dehydrateToolResult(
+      'generate-music',
+      { prompt: 'rain', fileName: 'Ozhog', outDir },
+      twoTracks()
+    );
+    const answer = JSON.parse(out.content[0].text);
+
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(answer.tracks[0].localPath).toBe(path.join(outDir, 'Ozhog.mp3'));
+    expect(answer.tracks[1].localPath).toBe(path.join(outDir, 'Ozhog (2).mp3'));
+    expect(fs.readFileSync(path.join(outDir, 'Ozhog.mp3'))).toEqual(mp3);
+    expect(fs.readFileSync(path.join(outDir, 'Ozhog (2).mp3'))).toEqual(mp3);
+    expect(answer.warnings).toEqual([]);
+  });
+
+  it('falls back to the title, then to the task id, exactly as the backend does', async () => {
+    stubFetch(mp3);
+    const outDir = path.join(tmpDir, 'by-title');
+
+    const titled = await dehydrateToolResult(
+      'generate-music',
+      { prompt: 'rain', title: 'Doroga', outDir },
+      backendResult({
+        taskId: 'job-1',
+        status: 'complete',
+        tracks: [{ id: 't1', audioUrl: 'https://cdn.example.com/t1.mp3' }],
+      })
+    );
+    expect(JSON.parse(titled.content[0].text).tracks[0].localPath).toBe(
+      path.join(outDir, 'Doroga.mp3')
+    );
+
+    const anonymous = await dehydrateToolResult(
+      'music-status',
+      { taskId: 'job-1', outDir },
+      backendResult({
+        taskId: 'job-1',
+        status: 'complete',
+        tracks: [{ id: 't1', audioUrl: 'https://cdn.example.com/t1.mp3' }],
+      })
+    );
+    expect(JSON.parse(anonymous.content[0].text).tracks[0].localPath).toBe(
+      path.join(outDir, 'Suno job-1.mp3')
+    );
+  });
+
+  it('keeps the answer when a download fails and explains it in warnings', async () => {
+    stubFetch(null, 503);
+    const outDir = path.join(tmpDir, 'broken');
+
+    const out = await dehydrateToolResult(
+      'generate-music',
+      { fileName: 'Ozhog', outDir },
+      twoTracks()
+    );
+    const answer = JSON.parse(out.content[0].text);
+
+    expect(answer.tracks[0].localPath).toBeUndefined();
+    expect(answer.tracks[0].audioUrl).toBe('https://cdn.example.com/t1.mp3');
+    expect(answer.warnings).toHaveLength(2);
+    expect(answer.warnings[0]).toContain('HTTP 503');
+  });
+
+  it('refuses a track over the upload limit rather than filling the disk', async () => {
+    stubFetch(Buffer.alloc(MAX_UPLOAD_BYTES + 1));
+    const outDir = path.join(tmpDir, 'huge');
+
+    const out = await dehydrateToolResult(
+      'music-status',
+      { taskId: 'job-1', fileName: 'Ozhog', outDir },
+      backendResult({
+        taskId: 'job-1',
+        status: 'complete',
+        tracks: [{ id: 't1', audioUrl: 'https://cdn.example.com/t1.mp3' }],
+      })
+    );
+    const answer = JSON.parse(out.content[0].text);
+
+    expect(answer.tracks[0].localPath).toBeUndefined();
+    expect(answer.warnings.join(' ')).toContain('MB limit');
+    expect(fs.existsSync(path.join(outDir, 'Ozhog.mp3'))).toBe(false);
+  });
+
+  it('passes the answer through without outDir, on an error, and for other tools', async () => {
+    const fetchMock = stubFetch(mp3);
+    const result = twoTracks();
+    const errorResult = { content: [{ type: 'text', text: 'Error: nope' }], isError: true };
+
+    await expect(dehydrateToolResult('generate-music', { prompt: 'rain' }, result)).resolves.toBe(
+      result
+    );
+    await expect(
+      dehydrateToolResult('generate-music', { outDir: tmpDir }, errorResult)
+    ).resolves.toBe(errorResult);
+    await expect(dehydrateToolResult('upload-file', { outDir: tmpDir }, result)).resolves.toBe(
+      result
+    );
+    expect(fetchMock).not.toHaveBeenCalled();
   });
 });
 

@@ -381,7 +381,7 @@ async function startWrapper() {
     try {
       const res = await backend.send('call_tool', { name, args: hydrated.args });
 
-      return dehydrateToolResult(name, hydrated.args, res);
+      return await dehydrateToolResult(name, hydrated.args, res);
     } catch (e: any) {
       return {
         content: [{ type: 'text', text: `Error: ${e?.message || 'Backend unavailable'}` }],
