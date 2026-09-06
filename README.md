@@ -200,7 +200,7 @@ The tools are always listed; a provider without a key answers with the name of t
 From the shell:
 
 ```bash
-node scripts/music-gen.mjs "dark ambient, low strings, slow" --title="Ozhog"   --target-dir="worlds/my-world/sessions/Session 15" --playlist="S15" --out=./assets
+node scripts/music-gen.mjs "dark ambient, low strings, slow" --title="Ozhog" --target-dir="worlds/my-world/sessions/Session 15" --playlist="S15" --out=./assets
 node scripts/music-gen.mjs --status=<taskId> --target-dir="worlds/my-world/music"
 node scripts/music-gen.mjs --credits
 ```
