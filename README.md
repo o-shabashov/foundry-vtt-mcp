@@ -176,6 +176,50 @@ Once connected, ask Claude Desktop:
 - **40** dnd5e-add-features-from-compendium (D&D 5e Only)
 - **41** manage-actors (create / update / delete actors; update / delete embedded items — any system)
 
+## Music Generation
+
+Three tools turn a prompt into a finished Suno track and put it where a session needs it: `generate-music`, `music-status` and `music-credits`.
+
+Suno has no public API, so generation goes through a proxy provider. Two are supported and the backend picks one by configuration:
+
+| Variable                 | Default                                 | Meaning                                                                       |
+| ------------------------ | --------------------------------------- | ----------------------------------------------------------------------------- |
+| `MUSIC_PROVIDER`         | `apiframe`                              | `apiframe` or `sunoapi`                                                       |
+| `APIFRAME_API_KEY`       | empty                                   | apiframe.ai key, sent as `X-API-Key`                                          |
+| `APIFRAME_BASE_URL`      | `https://api.apiframe.ai`               |                                                                               |
+| `SUNOAPI_API_KEY`        | empty                                   | sunoapi.org key, sent as `Authorization: Bearer`                              |
+| `SUNOAPI_BASE_URL`       | `https://api.sunoapi.org`               |                                                                               |
+| `MUSIC_CALLBACK_URL`     | `https://example.invalid/suno-callback` | sunoapi.org demands a callback URL; these tools poll instead, so it is a stub |
+| `MUSIC_POLL_INTERVAL_MS` | `5000`                                  | how often a running task is checked                                           |
+| `MUSIC_TIMEOUT_MS`       | `300000`                                | how long `generate-music` waits before answering "pending"                    |
+
+The tools are always listed; a provider without a key answers with the name of the environment variable to set.
+
+`generate-music` takes a `prompt` and, optionally, `style`, `title`, `instrumental` (true by default), `model` and the usual Suno knobs. Suno returns two takes of every prompt. With `targetDir` the backend downloads them and uploads them into the Foundry Data directory through the same query as `upload-file`; with `playlist` they are appended to that playlist, or a new sequential one is created; with `outDir` the stdio wrapper keeps a copy on the machine running the MCP client. Generation takes a couple of minutes, so a call that runs past `MUSIC_TIMEOUT_MS` answers `"status": "pending"` with a task id for `music-status` rather than an error.
+
+From the shell:
+
+```bash
+node scripts/music-gen.mjs "dark ambient, low strings, slow" --title="Ozhog"   --target-dir="worlds/my-world/sessions/Session 15" --playlist="S15" --out=./assets
+node scripts/music-gen.mjs --status=<taskId> --target-dir="worlds/my-world/music"
+node scripts/music-gen.mjs --credits
+```
+
+A session manifest can generate its own soundtrack: a playlist track with a `generate` block is produced with Suno into `assetsDir` when the file is missing, before the uploads run.
+
+```yaml
+playlists:
+  - name: S15
+    tracks:
+      - file: '3 Fresh Meat.mp3'
+        generate:
+          {
+            prompt: 'dark industrial, distorted percussion',
+            style: 'industrial, 90 bpm',
+            title: 'Fresh Meat',
+          }
+```
+
 ## Settings
 
 <img width="964" height="803" alt="image" src="https://github.com/user-attachments/assets/bfd435d5-2df4-40a6-a79b-87e98121db3f" />
