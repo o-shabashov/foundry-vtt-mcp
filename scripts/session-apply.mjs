@@ -2,7 +2,7 @@
 // Build a whole session in Foundry from a YAML manifest: upload assets, create scenes with lights,
 // walls, tiles, notes and tokens, playlists, journals with ownership, optionally a combat.
 //
-//   node scripts/session-apply.mjs path/to/session.yaml [--dry-run] [--only=uploads,scenes,playlists,journals,combat,thumbs]
+//   node scripts/session-apply.mjs path/to/session.yaml [--dry-run] [--only=music,uploads,scenes,playlists,journals,combat,thumbs]
 //
 // Manifest (paths under `assetsDir` are local; they are uploaded to `remoteDir` and referenced by that path):
 //
@@ -25,6 +25,9 @@
 //       playlist: С15 Заводь
 //   playlists:
 //     - { name: С15 Заводь, mode: shuffle, tracks: [ { file: Бой.mp3, repeat: true, volume: 0.5 } ] }
+//                                                   # a track may carry `generate` instead of a ready file:
+//                                                   # { file: Бой.mp3, generate: { prompt: "dark industrial...", style: "...", title: "Бой", instrumental: true, model: V5 } }
+//                                                   # missing files are generated with Suno into assetsDir before the uploads run
 //   journals:
 //     - name: Хэндаут
 //       folder: Сессия 15
@@ -57,6 +60,27 @@ const remoteDir = manifest.remoteDir;
 if (!remoteDir) throw new Error('manifest.remoteDir is required');
 
 const ASSET_EXT = /\.(jpe?g|png|webp|gif|svg|mp3|ogg|wav|webm|mp4|pdf)$/i;
+
+/** Escape a file name for use inside a regular expression. */
+const escapeRe = value => value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+
+/**
+ * Suno hands back two takes of every prompt. The first becomes the manifest file, the
+ * second stays next to it as "<name> (2).mp3" for a listen and never reaches Foundry,
+ * so the default upload list skips those alternates.
+ */
+const generatedAlternates = (manifest.playlists ?? [])
+  .flatMap(p => p.tracks ?? [])
+  .filter(t => t.generate && (t.file ?? t.path))
+  .map(t => {
+    const file = t.file ?? t.path;
+    const dot = file.lastIndexOf('.');
+    const base = dot > 0 ? file.slice(0, dot) : file;
+    const ext = dot > 0 ? file.slice(dot) : '';
+    return new RegExp(`^${escapeRe(base)} \\(\\d+\\)${escapeRe(ext)}$`);
+  });
+
+const isGeneratedAlternate = file => generatedAlternates.some(re => re.test(file));
 
 /** Pixel width of a local image, via macOS `sips`; null when unavailable. */
 function localImageWidth(file) {
@@ -108,7 +132,8 @@ function remote(ref) {
   return guess;
 }
 
-const client = dryRun ? null : await createClient({ timeoutMs: 300000 });
+// Ten minutes: a generate-music call with wait: true blocks for the whole Suno run.
+const client = dryRun ? null : await createClient({ timeoutMs: 600000 });
 const bestiaryPack = manifest.bestiary ?? 'world.pepel-bestiary';
 let bestiaryIndex = null;
 
@@ -135,11 +160,46 @@ async function call(name, toolArgs) {
 }
 
 try {
+  // ---------- music (before uploads, so a generated track is uploaded with the rest) ----------
+  if (want('music')) {
+    for (const p of manifest.playlists ?? []) {
+      for (const t of p.tracks ?? []) {
+        const file = t.file ?? t.path;
+        if (!t.generate || !file) continue;
+
+        const local = path.join(assetsDir, file);
+        if (fs.existsSync(local)) {
+          log(`music: ${file} is already there, skipped`);
+          continue;
+        }
+
+        const baseName = file.replace(/\.[^.]+$/, '');
+        log(`music: generating ${file}`);
+        if (dryRun) {
+          log(`  [dry-run] generate-music ${JSON.stringify({ ...t.generate, outDir: assetsDir, fileName: baseName }).slice(0, 300)}`);
+          continue;
+        }
+
+        // No targetDir: the uploads section below puts the file into Foundry.
+        const answer = await client.call('generate-music', {
+          ...t.generate,
+          wait: true,
+          outDir: assetsDir,
+          fileName: baseName,
+        });
+        for (const warning of answer?.warnings ?? []) log(`  warning: ${warning}`);
+        const first = (answer?.tracks ?? [])[0];
+        if (first?.localPath) log(`  ${file} <- ${first.localPath}`);
+        else log(`  (no track came back for ${file}, status ${answer?.status})`);
+      }
+    }
+  }
+
   // ---------- uploads ----------
   if (want('uploads')) {
     const list = manifest.uploads?.length
       ? manifest.uploads.map(u => (typeof u === 'string' ? u : u.file))
-      : fs.readdirSync(assetsDir).filter(f => ASSET_EXT.test(f));
+      : fs.readdirSync(assetsDir).filter(f => ASSET_EXT.test(f) && !isGeneratedAlternate(f));
     log(`uploads: ${list.length} files -> ${remoteDir}`);
     for (const file of list) {
       const local = path.join(assetsDir, file);
